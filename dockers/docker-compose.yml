@@ -1,0 +1,125 @@
+services:
+  pgsql:
+    image: postgres:17
+    container_name: govdoc-db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: document_scanner
+      POSTGRES_USER: laravel
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - pgsql-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U laravel -d document_scanner"]
+      interval: 5s
+      retries: 5
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: document-scanner-mq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"    # AMQP (apps connect here)
+      - "15672:15672"  # Management UI: http://localhost:15672 (guest/guest)
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: govdoc-storage
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"    # S3 API (apps connect here)
+      - "9001:9001"    # Web console: http://localhost:9001
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio-secret   # change for anything non-local
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      retries: 5
+
+  # One-shot: creates the "documents" bucket, then exits.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 minio minio-secret &&
+        mc mb --ignore-existing local/documents &&
+        echo 'MinIO ready: bucket documents created'
+      "
+
+  # HTTP API — kept for direct testing (curl -F file=@x.pdf :8080/extract)
+  ocr-api:
+    build: ./ocr-service
+    container_name: document-scanner-ocr-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+
+  # RabbitMQ consumer — the production path.
+  # Scale with: docker compose up -d --scale ocr-worker=3
+  ocr-worker:
+    build: ./ocr-service
+    command: python worker.py
+    restart: unless-stopped
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2F?heartbeat=3600
+      OCR_CALLBACK_SECRET: dev-callback-secret-change-me
+      S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio-secret
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets the worker reach Laravel on your host
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  opensearch:
+    image: opensearchproject/opensearch:2
+    container_name: govdoc-search
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      retries: 10
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2
+    container_name: document-scanner-search-ui
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    depends_on:
+      - opensearch
+
+volumes:
+  pgsql-data:
+  rabbitmq-data:
+  minio-data:
+  opensearch-data:
