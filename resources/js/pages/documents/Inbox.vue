@@ -13,6 +13,7 @@ interface InboxRow {
     tracking_status: string;
     from: string;
     received_at: string | null;
+    is_mine_to_act_on: boolean;
 }
 
 interface PaginationLink { url: string | null; label: string; active: boolean; }
@@ -47,11 +48,8 @@ async function receive(doc: InboxRow) {
                 <TableBody>
                     <TableRow v-for="doc in documents.data" :key="doc.id">
                         <TableCell class="font-medium">
-                            <a :href="`/documents/${doc.id}`" target="_blank" class="hover:underline">
+                            <a :href="`/documents/${doc.id}/routing`" class="hover:underline">
                                 {{ doc.original_filename }}
-                            </a>
-                            <a :href="`/documents/${doc.id}/routing`" class="hover:underline grey">
-                                Track
                             </a>
                         </TableCell>
                         <TableCell>{{ doc.from }}</TableCell>
@@ -60,11 +58,11 @@ async function receive(doc: InboxRow) {
                         </TableCell>
                         <TableCell class="text-right">
                             <Button
-                                v-if="!doc.received_at"
-                                size="sm"
-                                @click="receive(doc)"
-                            >
-                                Mark received
+                                    v-if="doc.is_mine_to_act_on && !doc.received_at && doc.from !== '—'"
+                                    size="sm"
+                                    @click="receive(doc)"
+                                >
+                                    Mark received
                             </Button>
                         </TableCell>
                     </TableRow>

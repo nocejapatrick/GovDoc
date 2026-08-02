@@ -45,6 +45,7 @@ return [
     'ocr' => [
         'callback_secret' => env('OCR_CALLBACK_SECRET'),
         'callback_base' => env('OCR_CALLBACK_BASE', env('APP_URL')),
+        'host' => env('OCR_SERVICE_HOST', 'http://localhost:8080'),
     ],
 
     'opensearch' => [

@@ -12,6 +12,7 @@ class DocumentRouteController extends Controller
 {
     public function forward(Request $request, Document $document): RedirectResponse
     {
+        // dd($document->current_holder_id, $request->user()->id);
         abort_unless($document->current_holder_id === $request->user()->id, 403);
 
         $data = $request->validate([
@@ -82,11 +83,22 @@ class DocumentRouteController extends Controller
     /** Documents currently sitting with the logged-in user, awaiting action. */
     public function inbox(Request $request)
     {
-        $documents = Document::where('current_holder_id', $request->user()->id)
-                ->where('tracking_status', '!=', 'draft')   // only things actually routed to you
-                ->with('routes.fromUser')
-                ->latest()
-                ->paginate(15);
+        $userId = $request->user()->id;
+
+        $documents = Document::where(function ($query) use ($userId) {
+                $query->where('current_holder_id', $userId)   // it's with me right now
+                    ->orWhereHas('routes', function ($q) use ($userId) {
+                        $q->where('from_user_id', $userId)   // I sent it at some point
+                            ->orWhere('to_user_id', $userId);   // or I received it at some point
+                    });
+            })
+        ->whereHas('routes') 
+        ->with(['currentHolder.orgUnit', 'routes' => function ($query) {
+            $query->latest();
+        }])
+        ->latest()
+        ->paginate(15);
+
 
         return \Inertia\Inertia::render('documents/Inbox', [
             'documents' => $documents->through(fn (Document $doc) => [
@@ -95,6 +107,8 @@ class DocumentRouteController extends Controller
                 'tracking_status' => $doc->tracking_status,
                 'from' => $doc->routes->first()?->fromUser?->name ?? '—',
                 'received_at' => $doc->routes->first()?->received_at?->format('M j, Y H:i'),
+                'current_holder_id' => $doc->current_holder_id,
+                'is_mine_to_act_on' => $doc->current_holder_id === $userId,
             ]),
         ]);
     }

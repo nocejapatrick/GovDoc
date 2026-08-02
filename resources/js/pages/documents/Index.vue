@@ -51,6 +51,7 @@ interface DocumentRow {
     current_holder_id : number | null;
     current_holder_name : string | null;
     tracking_status: string | null;
+    has_been_routed: boolean;
 }
 
 interface PaginationLink {
@@ -320,7 +321,7 @@ async function submitForward() {
                         </TableCell>
                         <TableCell class="text-right">
                             <Button
-                                v-if="doc.user_id === currentUserId"
+                                v-if="doc.user_id === currentUserId && !doc.has_been_routed"
                                 variant="outline"
                                 size="sm"
                                 class="bg-red-500 text-white hover:bg-red-700 hover:text-white"

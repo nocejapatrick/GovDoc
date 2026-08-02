@@ -10,6 +10,8 @@ Production traffic flows through the SQS worker (worker.py) instead.
 import pytesseract
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi import Form
+from fastapi.responses import Response
+import fitz
 
 from extractor import PermanentExtractionError, extract_pdf
 
@@ -52,9 +54,24 @@ async def sign_pdf(
     sig_bytes = await signature.read()
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+    if doc.needs_pass:
+        raise HTTPException(status_code=422, detail="PDF is password-protected.")
+
+    # Repair broken xref tables before doing anything else.
+    try:
+        repaired_bytes = doc.tobytes(garbage=4, deflate=True, clean=True)
+        doc.close()
+        doc = fitz.open(stream=repaired_bytes, filetype="pdf")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"This PDF is too corrupted to sign: {exc}")
+
+    if page < 1 or page > doc.page_count:
+        raise HTTPException(status_code=422, detail=f"Page {page} out of range.")
+
     target_page = doc[page - 1]
 
-    # Convert screen/canvas pixel coords back to real PDF points
+    # Convert screen/canvas pixel coordinates back to real PDF point space.
     pdf_x = x / render_scale
     pdf_y = y / render_scale
     pdf_w = width / render_scale
@@ -63,7 +80,7 @@ async def sign_pdf(
     rect = fitz.Rect(pdf_x, pdf_y, pdf_x + pdf_w, pdf_y + pdf_h)
     target_page.insert_image(rect, stream=sig_bytes)
 
-    output = doc.tobytes()
+    output = doc.tobytes(garbage=4, deflate=True, clean=True)
     doc.close()
 
     return Response(content=output, media_type="application/pdf")

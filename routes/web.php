@@ -30,6 +30,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::get('/documents/{document}/routing', [DocumentController::class, 'routing'])->name('documents.routing');
     Route::get('/documents/{document}/raw', [DocumentController::class, 'raw'])->name('documents.raw');
+
+    Route::get('/documents/{document}/sign', [DocumentController::class, 'showSignPage'])->name('documents.sign');
+    Route::post('/documents/{document}/sign', [DocumentController::class, 'applySignature']);
 });
 
 

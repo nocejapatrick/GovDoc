@@ -1,48 +1,36 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import axios from 'axios';
+import { usePdfViewer } from '@/composables/usePdfViewer';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 const props = defineProps<{ document: { id: number; original_filename: string } }>();
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const overlayRef = ref<HTMLDivElement | null>(null);
-const pageNum = ref(1);
-const numPages = ref(1);
-const pdfDoc = ref<any>(null);
+const { numPages, pageNum, load, renderPage } = usePdfViewer();
 
-// Signature state
 const signatureFile = ref<File | null>(null);
 const signaturePreviewUrl = ref('');
 const sigPos = ref({ x: 100, y: 100, width: 160, height: 60 });
 const dragging = ref(false);
 const dragOffset = ref({ x: 0, y: 0 });
+const renderScale = 1.4;
+const submitting = ref(false);
 
 onMounted(async () => {
-    const loadingTask = pdfjsLib.getDocument(`/documents/${props.document.id}/raw`);
-    pdfDoc.value = await loadingTask.promise;
-    numPages.value = pdfDoc.value.numPages;
-    renderPage(1);
+    await load(`/documents/${props.document.id}/raw`);
+    render();
 });
 
-async function renderPage(num: number) {
-    const page = await pdfDoc.value.getPage(num);
-    const viewport = page.getViewport({ scale: 1.4 });
-
-    const canvas = canvasRef.value!;
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-
-    await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
-
-    if (overlayRef.value) {
-        overlayRef.value.style.width = `${viewport.width}px`;
-        overlayRef.value.style.height = `${viewport.height}px`;
+async function render() {
+    if (canvasRef.value) {
+        const viewport = await renderPage(canvasRef.value, pageNum.value, renderScale);
+        if (overlayRef.value) {
+            overlayRef.value.style.width = `${viewport.width}px`;
+            overlayRef.value.style.height = `${viewport.height}px`;
+        }
     }
 }
 
@@ -71,7 +59,8 @@ function stopDrag() {
 }
 
 async function applySignature() {
-    if (!signatureFile.value) return;
+    if (!signatureFile.value || submitting.value) return;
+    submitting.value = true;
 
     const form = new FormData();
     form.append('signature', signatureFile.value);
@@ -80,13 +69,15 @@ async function applySignature() {
     form.append('y', String(Math.round(sigPos.value.y)));
     form.append('width', String(Math.round(sigPos.value.width)));
     form.append('height', String(Math.round(sigPos.value.height)));
-    // The canvas render scale (1.4) must be sent too, so the backend
-    // can convert screen pixels back to real PDF points.
-    form.append('render_scale', '1.4');
+    form.append('render_scale', String(renderScale));
 
-    await axios.post(`/documents/${props.document.id}/sign`, form);
-
-    window.location.href = `/documents/${props.document.id}/routing`;
+    try {
+        await axios.post(`/documents/${props.document.id}/sign`, form);
+        window.location.href = `/documents/${props.document.id}/routing`;
+    } catch (err) {
+        submitting.value = false;
+        alert('Could not apply signature. Please try again.');
+    }
 }
 </script>
 
@@ -96,7 +87,7 @@ async function applySignature() {
 
         <div class="flex items-center gap-3">
             <Input type="file" accept="image/png" @change="onSignatureChosen" class="max-w-xs" />
-            <span class="text-sm text-muted-foreground">Upload a signature image (PNG, transparent background works best)</span>
+            <span class="text-sm text-muted-foreground">Upload your signature (PNG, transparent background preferred)</span>
         </div>
 
         <div
@@ -123,12 +114,14 @@ async function applySignature() {
             </div>
         </div>
 
-        <div class="flex items-center gap-2">
-            <Button variant="outline" :disabled="pageNum <= 1" @click="pageNum--; renderPage(pageNum)">Prev page</Button>
+        <div v-if="numPages > 1" class="flex items-center gap-2">
+            <Button variant="outline" size="sm" :disabled="pageNum <= 1" @click="pageNum--; render()">Prev</Button>
             <span class="text-sm">Page {{ pageNum }} of {{ numPages }}</span>
-            <Button variant="outline" :disabled="pageNum >= numPages" @click="pageNum++; renderPage(pageNum)">Next page</Button>
+            <Button variant="outline" size="sm" :disabled="pageNum >= numPages" @click="pageNum++; render()">Next</Button>
         </div>
 
-        <Button :disabled="!signatureFile" @click="applySignature">Apply signature & finalize</Button>
+        <Button :disabled="!signatureFile || submitting" @click="applySignature">
+            {{ submitting ? 'Applying…' : 'Apply signature' }}
+        </Button>
     </div>
 </template>

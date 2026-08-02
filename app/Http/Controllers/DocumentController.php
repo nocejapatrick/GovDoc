@@ -12,6 +12,9 @@ use Inertia\Response;
 use App\Services\DocumentIndexer;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Illuminate\Support\Facades\Http;
+use App\Models\User;
+use App\Models\OrgUnit;
 
 class DocumentController extends Controller
 {
@@ -19,8 +22,7 @@ class DocumentController extends Controller
     {
         $documents = Document::query()
                     ->where(fn ($q) => $q
-                        ->where('user_id', $request->user()->id)
-                        ->orWhere('visibility', 'public'))
+                        ->where('user_id', $request->user()->id))
                     ->latest()
                     ->paginate(10);
 
@@ -41,7 +43,8 @@ class DocumentController extends Controller
                 'owner' => $doc->user->name,
                 'current_holder_id' => $doc->current_holder_id,
                 'current_holder_name' => $doc->currentHolder?->name,
-                'tracking_status' => $doc->tracking_status
+                'tracking_status' => $doc->tracking_status,
+                'has_been_routed' => $doc->routes()->exists(),
             ]),
         ]);
     }
@@ -155,14 +158,27 @@ class DocumentController extends Controller
         return back();
     }
 
-    public function routing(Request $request, Document $document)
+    public function routing(Request $request, Document $document): Response
     {
+        $userId = $request->user()->id;
+
+        $hasBeenInvolved = $document->routes()
+            ->where(fn ($q) => $q->where('from_user_id', $userId)->orWhere('to_user_id', $userId))
+            ->exists();
+
         abort_unless(
-            $document->user_id === $request->user()->id
-                || $document->visibility === 'public'
-                || $document->current_holder_id === $request->user()->id,
+            $document->user_id === $userId              // uploaded it
+                || $document->visibility === 'public'     // publicly visible
+                || $document->current_holder_id === $userId  // currently holds it
+                || $hasBeenInvolved,                          // was ever a sender/recipient in its routing
             403,
         );
+
+        $latestRoute = $document->routes()->latest()->first();
+        $isCurrentHolder = $document->current_holder_id === $request->user()->id;
+        $hasUnreceivedIncoming = $latestRoute
+        && $latestRoute->to_user_id === $request->user()->id
+        && $latestRoute->received_at === null;
 
         return Inertia::render('documents/Routing', [
             'document' => [
@@ -170,8 +186,22 @@ class DocumentController extends Controller
                 'original_filename' => $document->original_filename,
                 'tracking_status' => $document->tracking_status,
                 'current_holder' => $document->currentHolder?->name,
+                'current_holder_id' => $document->current_holder_id,
                 'current_org_unit' => $document->currentHolder?->orgUnit?->name,
             ],
+            'can_receive' => $isCurrentHolder && $latestRoute && $latestRoute->received_at === null,
+            'can_forward' => $isCurrentHolder && ! $hasUnreceivedIncoming,
+            'is_focal' => $request->user()->hasRole('document_focal'),
+            'colleagues' => $isCurrentHolder
+                ? User::where('org_unit_id', $request->user()->org_unit_id)
+                    ->where('id', '!=', $request->user()->id)
+                    ->get(['id', 'name'])
+                : [],
+            'divisions' => $isCurrentHolder
+                ? OrgUnit::where('type', 'division')
+                    ->where('id', '!=', $request->user()->org_unit_id)
+                    ->get(['id', 'name'])
+                : [],
             'trail' => $document->routes()
                 ->with(['fromUser.orgUnit', 'toUser.orgUnit'])
                 ->oldest()
@@ -189,6 +219,8 @@ class DocumentController extends Controller
                 ]),
         ]);
     }
+
+
     public function raw(Request $request, Document $document): StreamedResponse
     {
         // abort_unless(
@@ -203,5 +235,58 @@ class DocumentController extends Controller
             $document->original_filename,
             ['Content-Type' => 'application/pdf'],
         );
+    }
+    public function applySignature(Request $request, Document $document): RedirectResponse
+    {
+        abort_unless($document->current_holder_id === $request->user()->id, 403);
+
+        $data = $request->validate([
+            'signature' => ['required', 'image', 'max:2048'],
+            'page' => ['required', 'integer', 'min:1'],
+            'x' => ['required', 'numeric'],
+            'y' => ['required', 'numeric'],
+            'width' => ['required', 'numeric'],
+            'height' => ['required', 'numeric'],
+            'render_scale' => ['required', 'numeric'],
+        ]);
+
+        $currentPdf = Storage::disk('s3')->get($document->storage_path);
+
+        $response = Http::attach('pdf', $currentPdf, 'document.pdf')
+            ->attach('signature', file_get_contents($data['signature']->getRealPath()), 'signature.png')
+            ->timeout(60)
+            ->post(config('services.ocr.host') . '/sign', [
+                'page' => $data['page'],
+                'x' => $data['x'],
+                'y' => $data['y'],
+                'width' => $data['width'],
+                'height' => $data['height'],
+                'render_scale' => $data['render_scale'],
+            ]);
+
+        $response->throw();
+
+        // TEMPORARY: overwrite in place. Versioning comes next, once this works.
+        Storage::disk('s3')->put($document->storage_path, $response->body());
+
+        $document->update(['tracking_status' => 'signed']);
+
+        activity()->performedOn($document)->causedBy($request->user())
+            ->withProperties(['filename' => $document->original_filename])
+            ->log('signed');
+
+        return redirect("/documents/{$document->id}/routing");
+    }
+
+    public function showSignPage(Request $request, Document $document): Response
+    {
+        abort_unless($document->current_holder_id === $request->user()->id, 403);
+
+        return Inertia::render('documents/Sign', [
+            'document' => [
+                'id' => $document->id,
+                'original_filename' => $document->original_filename,
+            ],
+        ]);
     }
 }
