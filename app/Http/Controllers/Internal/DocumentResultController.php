@@ -41,10 +41,12 @@ class DocumentResultController extends Controller
             'error' => null,
         ]);
 
-        try {
-            app(\App\Services\DocumentIndexer::class)->index($document->refresh());
-        } catch (\Throwable $e) {
-            report($e);
+        if ($document->type === 'general') {
+            try {
+                app(\App\Services\DocumentIndexer::class)->index($document->refresh());
+            } catch (\Throwable $e) {
+                report($e);
+            }
         }
 
         return response()->noContent();

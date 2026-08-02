@@ -6,6 +6,7 @@ use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\Internal\DocumentResultController;
 use App\Http\Controllers\Internal\DocumentProgressController;
 use App\Http\Controllers\DocumentRouteController;
+use App\Http\Controllers\RoutingController;
 
 Route::inertia('/', 'Welcome')->name('home');
 
@@ -18,7 +19,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('/documents/{document}', [DocumentController::class, 'destroy'])->name('documents.destroy');
     Route::get('/documents/search', [DocumentController::class, 'search'])->name('documents.search');
     Route::get('/documents/routing-options', [DocumentRouteController::class, 'routingOptions']);
-    Route::get('/inbox', [DocumentRouteController::class, 'inbox'])->name('documents.inbox');
+    // Route::get('/inbox', [DocumentRouteController::class, 'inbox'])->name('documents.inbox');
+    Route::get('/routing', [RoutingController::class, 'index'])->name('routing.index');
+    Route::post('/routing', [RoutingController::class, 'store'])->name('routing.store');
+
 
 
     Route::get('/documents/{document}', [DocumentController::class, 'view'])->name('documents.view');
@@ -28,11 +32,16 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('/documents/{document}/forward', [DocumentRouteController::class, 'forward'])->name('documents.forward');
     Route::post('/documents/{document}/receive', [DocumentRouteController::class, 'receive'])->name('documents.receive');
 
-    Route::get('/documents/{document}/routing', [DocumentController::class, 'routing'])->name('documents.routing');
+    // Route::get('/documents/{document}/routing', [DocumentController::class, 'routing'])->name('documents.routing');
     Route::get('/documents/{document}/raw', [DocumentController::class, 'raw'])->name('documents.raw');
 
     Route::get('/documents/{document}/sign', [DocumentController::class, 'showSignPage'])->name('documents.sign');
     Route::post('/documents/{document}/sign', [DocumentController::class, 'applySignature']);
+
+    Route::get('/routing/{case}', [RoutingController::class, 'show'])->name('routing.show');
+    Route::post('/routing/{case}/files', [RoutingController::class, 'addFile']);
+    Route::post('/routing/{case}/forward', [RoutingController::class, 'forward']);
+    Route::post('/routing/{case}/receive', [RoutingController::class, 'receive']);
 });
 
 

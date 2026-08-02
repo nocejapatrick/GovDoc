@@ -72,8 +72,8 @@ async function applySignature() {
     form.append('render_scale', String(renderScale));
 
     try {
-        await axios.post(`/documents/${props.document.id}/sign`, form);
-        window.location.href = `/documents/${props.document.id}/routing`;
+        const { data } = await axios.post(`/documents/${props.document.id}/sign`, form);
+        window.location.href = data.redirect;
     } catch (err) {
         submitting.value = false;
         alert('Could not apply signature. Please try again.');

@@ -32,7 +32,7 @@ async function receive(doc: InboxRow) {
     <div class="mx-auto flex w-full max-w-4xl flex-col gap-6 p-6">
         <div>
             <h1 class="text-2xl font-semibold tracking-tight">Inbox</h1>
-            <p class="text-sm text-muted-foreground">Documents currently routed to you.</p>
+            <p class="text-sm text-muted-foreground">Documents currently routed to you or you routed.</p>
         </div>
 
         <div class="rounded-lg border">

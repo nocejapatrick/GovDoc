@@ -38,7 +38,7 @@ class DocumentRouteController extends Controller
             $action = 'forwarded';
         }
 
-        $document->routes()->create([
+        $document->routingCase->routes()->create([
             'from_user_id' => $request->user()->id,
             'to_user_id' => $recipient->id,
             'to_org_unit_id' => $recipient->org_unit_id,
@@ -62,7 +62,7 @@ class DocumentRouteController extends Controller
     {
         abort_unless($document->current_holder_id === $request->user()->id, 403);
 
-        $pendingRoute = $document->routes()
+        $pendingRoute = $document->routingCase->routes()
             ->where('to_user_id', $request->user()->id)
             ->whereNull('received_at')
             ->latest()

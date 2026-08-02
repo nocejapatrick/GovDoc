@@ -152,66 +152,6 @@ const methodLabel = (method: string | null) =>
     method === 'text' ? 'Native text' : method === 'ocr' ? 'OCR' : method === 'mixed' ? 'Mixed' : '—';
 
 
-
-
-/* Forward ------------------------------------------------------------- */
-
-const forwardDialogOpen = ref(false);
-const forwardingDoc = ref<DocumentRow | null>(null);
-const routingScope = ref<'within_division' | 'cross_division'>('within_division');
-const toUserId = ref<number | null>(null);
-const toOrgUnitId = ref<number | null>(null);
-const remarks = ref('');
-const forwardError = ref('');
-
-const colleagues = ref<{ id: number; name: string }[]>([]);
-const divisions = ref<{ id: number; name: string }[]>([]);
-
-const isFocal = computed(() =>
-    ((usePage().props as any).auth?.user?.roles ?? []).includes('document_focal'),
-);
-
-onMounted(async () => {
-    const { data } = await axios.get('/documents/routing-options');
-    colleagues.value = data.colleagues;
-    divisions.value = data.divisions;
-});
-
-function openForward(doc: DocumentRow) {
-    forwardingDoc.value = doc;
-    routingScope.value = 'within_division';
-    toUserId.value = null;
-    toOrgUnitId.value = null;
-    remarks.value = '';
-    forwardError.value = '';
-    forwardDialogOpen.value = true;
-}
-
-async function submitForward() {
-    if (!forwardingDoc.value) return;
-    forwardError.value = '';
-
-    try {
-        await axios.post(`/documents/${forwardingDoc.value.id}/forward`, {
-            scope: routingScope.value,
-            to_user_id: toUserId.value,
-            to_org_unit_id: toOrgUnitId.value,
-            remarks: remarks.value || null,
-        });
-
-        forwardDialogOpen.value = false;
-        router.reload({ only: ['documents'] });
-    } catch (err: any) {
-        forwardError.value =
-            err.response?.data?.message ??
-            err.response?.data?.errors?.to_user_id?.[0] ??
-            err.response?.data?.errors?.to_org_unit_id?.[0] ??
-            'Could not forward this document.';
-    }
-}
-
-
-
 </script>
 
 
@@ -337,14 +277,6 @@ async function submitForward() {
                                 @click="router.post(`/documents/${doc.id}/retry`, {}, { preserveScroll: true })"
                             >
                                 Retry
-                            </Button>
-                            <Button
-                                v-if="doc.current_holder_id === currentUserId && doc.visibility === 'private'"
-                                variant="outline"
-                                size="sm"
-                                @click="openForward(doc)"
-                            >
-                                Forward
                             </Button>
                         </TableCell>
                     </TableRow>

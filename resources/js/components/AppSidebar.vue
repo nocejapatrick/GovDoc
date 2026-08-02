@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/sidebar';
 import { dashboard } from '@/routes';
 import type { NavItem } from '@/types';
-import { Inbox } from '@lucide/vue';
+import { Inbox,Send } from '@lucide/vue';
 
 const page = usePage();
 const isAdmin = computed(() =>
@@ -46,9 +46,9 @@ const mainNavItems: NavItem[] = [
         icon: ScrollText,
     },
     {
-        title: 'Inbox',
-        href: '/inbox',
-        icon: Inbox,   // from @lucide/vue
+        title: 'Routing',
+        href: '/routing',
+        icon: Send,   // or similar from @lucide/vue
     }
 ];
 

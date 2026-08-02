@@ -35,4 +35,8 @@ class DocumentRoute extends Model
     {
         return $this->belongsTo(OrgUnit::class, 'to_org_unit_id');
     }
+    public function routingCase(): BelongsTo
+    {
+        return $this->belongsTo(RoutingCase::class);
+    }
 }

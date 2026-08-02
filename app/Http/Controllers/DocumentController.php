@@ -44,7 +44,7 @@ class DocumentController extends Controller
                 'current_holder_id' => $doc->current_holder_id,
                 'current_holder_name' => $doc->currentHolder?->name,
                 'tracking_status' => $doc->tracking_status,
-                'has_been_routed' => $doc->routes()->exists(),
+                'has_been_routed' => $doc->routing_case_id !== null,
             ]),
         ]);
     }
@@ -90,9 +90,12 @@ class DocumentController extends Controller
             'password' => ['required', 'current_password'],
         ]);
 
+        if ($document->type === 'general') {
+            app(\App\Services\DocumentIndexer::class)->delete($document);
+        }
+
         Storage::disk('s3')->delete($document->storage_path);
         $document->delete();
-        app(\App\Services\DocumentIndexer::class)->delete($document);
 
         return back();
     }
@@ -162,7 +165,7 @@ class DocumentController extends Controller
     {
         $userId = $request->user()->id;
 
-        $hasBeenInvolved = $document->routes()
+        $hasBeenInvolved = $document->routingCase->routes()
             ->where(fn ($q) => $q->where('from_user_id', $userId)->orWhere('to_user_id', $userId))
             ->exists();
 
@@ -174,7 +177,8 @@ class DocumentController extends Controller
             403,
         );
 
-        $latestRoute = $document->routes()->latest()->first();
+        $latestRoute = $document->routingCase->routes()->latest()->first();
+        // dd($document->current_holder_id);
         $isCurrentHolder = $document->current_holder_id === $request->user()->id;
         $hasUnreceivedIncoming = $latestRoute
         && $latestRoute->to_user_id === $request->user()->id
@@ -189,8 +193,9 @@ class DocumentController extends Controller
                 'current_holder_id' => $document->current_holder_id,
                 'current_org_unit' => $document->currentHolder?->orgUnit?->name,
             ],
-            'can_receive' => $isCurrentHolder && $latestRoute && $latestRoute->received_at === null,
+            'can_receive' => $isCurrentHolder && $hasUnreceivedIncoming,
             'can_forward' => $isCurrentHolder && ! $hasUnreceivedIncoming,
+            'is_current_holder' => $isCurrentHolder,
             'is_focal' => $request->user()->hasRole('document_focal'),
             'colleagues' => $isCurrentHolder
                 ? User::where('org_unit_id', $request->user()->org_unit_id)
@@ -202,7 +207,7 @@ class DocumentController extends Controller
                     ->where('id', '!=', $request->user()->org_unit_id)
                     ->get(['id', 'name'])
                 : [],
-            'trail' => $document->routes()
+            'trail' => $document->routingCase->routes()
                 ->with(['fromUser.orgUnit', 'toUser.orgUnit'])
                 ->oldest()
                 ->get()
@@ -223,22 +228,21 @@ class DocumentController extends Controller
 
     public function raw(Request $request, Document $document): StreamedResponse
     {
-        // abort_unless(
-        //     $document->user_id === $request->user()->id
-        //         || $document->visibility === 'public'
-        //         || $document->current_holder_id === $request->user()->id,
-        //     403,
-        // );
+        abort_unless($document->isAccessibleBy($request->user()), 403);
 
+        $path = $document->currentVersion?->storage_path ?? $document->storage_path;
+    
         return Storage::disk('s3')->response(
-            $document->storage_path,
+            $path,
             $document->original_filename,
             ['Content-Type' => 'application/pdf'],
         );
     }
-    public function applySignature(Request $request, Document $document): RedirectResponse
+
+
+    public function applySignature(Request $request, Document $document): RedirectResponse | JsonResponse
     {
-        abort_unless($document->current_holder_id === $request->user()->id, 403);
+        abort_unless($document->isAccessibleBy($request->user()), 403);
 
         $data = $request->validate([
             'signature' => ['required', 'image', 'max:2048'],
@@ -250,7 +254,8 @@ class DocumentController extends Controller
             'render_scale' => ['required', 'numeric'],
         ]);
 
-        $currentPdf = Storage::disk('s3')->get($document->storage_path);
+        $sourcePath = $document->currentVersion?->storage_path ?? $document->storage_path;
+        $currentPdf = Storage::disk('s3')->get($sourcePath);
 
         $response = Http::attach('pdf', $currentPdf, 'document.pdf')
             ->attach('signature', file_get_contents($data['signature']->getRealPath()), 'signature.png')
@@ -266,21 +271,41 @@ class DocumentController extends Controller
 
         $response->throw();
 
-        // TEMPORARY: overwrite in place. Versioning comes next, once this works.
-        Storage::disk('s3')->put($document->storage_path, $response->body());
+        $nextVersionNumber = $document->versions()->max('version_number') + 1;
+        $newPath = "signed/{$document->id}/v{$nextVersionNumber}.pdf";
 
-        $document->update(['tracking_status' => 'signed']);
+        Storage::disk('s3')->put($newPath, $response->body());
+
+        $newVersion = $document->versions()->create([
+            'created_by' => $request->user()->id,
+            'storage_path' => $newPath,
+            'version_number' => $nextVersionNumber,
+            'label' => "Signed by {$request->user()->name}",
+        ]);
+
+        $document->update(['current_version_id' => $newVersion->id]);
+
+        if ($document->routing_case_id) {
+            $document->routingCase->update(['tracking_status' => 'signed']);
+        }
 
         activity()->performedOn($document)->causedBy($request->user())
-            ->withProperties(['filename' => $document->original_filename])
-            ->log('signed');
+                    ->withProperties(['filename' => $document->original_filename, 'version' => $nextVersionNumber])
+                    ->log('signed');
+                $redirectUrl = $document->routing_case_id
+            ? "/routing/{$document->routing_case_id}"
+            : "/documents/{$document->id}";
 
-        return redirect("/documents/{$document->id}/routing");
+        if ($request->wantsJson()) {
+            return response()->json(['redirect' => $redirectUrl]);
+        }
+
+        return redirect($redirectUrl);
     }
 
-    public function showSignPage(Request $request, Document $document): Response
+   public function showSignPage(Request $request, Document $document): Response
     {
-        abort_unless($document->current_holder_id === $request->user()->id, 403);
+        abort_unless($document->isAccessibleBy($request->user()), 403);
 
         return Inertia::render('documents/Sign', [
             'document' => [

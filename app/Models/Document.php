@@ -8,6 +8,8 @@ use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
 use Spatie\Activitylog\Contracts\Activity;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Models\DocumentVersion;
+
 
 class Document extends Model
 {
@@ -27,7 +29,10 @@ class Document extends Model
         'progress_total',
         'visibility',
         'current_holder_id', 
-        'tracking_status'
+        'tracking_status',
+        'type',
+        'routing_case_id',
+        'current_version_id',
     ];
 
     public function user(): BelongsTo
@@ -51,8 +56,32 @@ class Document extends Model
         return $this->belongsTo(User::class, 'current_holder_id');
     }
 
-    public function routes(): HasMany
+    public function versions(): HasMany
     {
-        return $this->hasMany(DocumentRoute::class)->latest();
+        return $this->hasMany(DocumentVersion::class)->orderBy('version_number');
+    }
+
+    public function currentVersion(): BelongsTo
+    {
+        return $this->belongsTo(DocumentVersion::class, 'current_version_id');
+    }
+    public function routingCase(): BelongsTo
+    {
+        return $this->belongsTo(RoutingCase::class);
+    }
+    public function isAccessibleBy(User $user): bool
+    {
+        if ($this->user_id === $user->id || $this->visibility === 'public') {
+            return true;
+        }
+
+        if ($this->routing_case_id) {
+            return $this->routingCase->current_holder_id === $user->id
+                || $this->routingCase->routes()
+                    ->where(fn ($q) => $q->where('from_user_id', $user->id)->orWhere('to_user_id', $user->id))
+                    ->exists();
+        }
+
+        return false; // no case, not owner, not public — no access
     }
 }
