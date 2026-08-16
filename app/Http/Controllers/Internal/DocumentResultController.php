@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use App\Models\Document;
+use App\Models\Setting;
 use App\Services\DocumentIndexer;
 
 class DocumentResultController extends Controller
@@ -47,6 +48,11 @@ class DocumentResultController extends Controller
             } catch (\Throwable $e) {
                 report($e);
             }
+        }
+
+        if ($document->include_in_llm && Setting::flag('ai_module_enabled')) {
+            $document->update(['llm_status' => 'pending']);
+            \App\Jobs\EmbedDocument::dispatch($document->refresh());
         }
 
         return response()->noContent();

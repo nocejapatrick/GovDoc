@@ -10,54 +10,6 @@ use Illuminate\Http\Request;
 
 class DocumentRouteController extends Controller
 {
-    public function forward(Request $request, Document $document): RedirectResponse
-    {
-        // dd($document->current_holder_id, $request->user()->id);
-        abort_unless($document->current_holder_id === $request->user()->id, 403);
-
-        $data = $request->validate([
-            'scope' => ['required', 'in:within_division,cross_division'],
-            'to_user_id' => ['required_if:scope,within_division', 'nullable', 'exists:users,id'],
-            'to_org_unit_id' => ['required_if:scope,cross_division', 'nullable', 'exists:org_units,id'],
-            'remarks' => ['nullable', 'string', 'max:1000'],
-        ]);
-
-        if ($data['scope'] === 'cross_division') {
-            $orgUnit = OrgUnit::findOrFail($data['to_org_unit_id']);
-            $recipient = $orgUnit->documentFocal(); // throws a clear 422 if none/ambiguous
-            $action = 'forwarded_to_focal';
-        } else {
-            $recipient = User::findOrFail($data['to_user_id']);
-
-            abort_unless(
-                $recipient->org_unit_id === $request->user()->org_unit_id,
-                422,
-                'Use cross-division routing to send outside your division.',
-            );
-
-            $action = 'forwarded';
-        }
-
-        $document->routingCase->routes()->create([
-            'from_user_id' => $request->user()->id,
-            'to_user_id' => $recipient->id,
-            'to_org_unit_id' => $recipient->org_unit_id,
-            'action' => $action,
-            'remarks' => $data['remarks'] ?? null,
-        ]);
-
-        $document->update([
-            'current_holder_id' => $recipient->id,
-            'tracking_status' => 'routed',
-        ]);
-
-        activity()->performedOn($document)->causedBy($request->user())
-            ->withProperties(['filename' => $document->original_filename, 'to' => $recipient->name])
-            ->log($action === 'forwarded_to_focal' ? 'forwarded to focal' : 'forwarded');
-
-        return back();
-    }
-
     public function receive(Request $request, Document $document): RedirectResponse
     {
         abort_unless($document->current_holder_id === $request->user()->id, 403);

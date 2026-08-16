@@ -5,8 +5,9 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Link } from '@lucide/vue';
+import { Sparkles, Send } from '@lucide/vue';
 import axios from 'axios';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
     Table,
     TableBody,
@@ -52,6 +53,14 @@ interface DocumentRow {
     current_holder_name : string | null;
     tracking_status: string | null;
     has_been_routed: boolean;
+    include_in_llm: boolean;
+    llm_status: 'pending' | 'ready' | 'failed' | null;
+}
+
+interface ChatMessage {
+    role: 'user' | 'assistant';
+    content: string;
+    sources?: string[];
 }
 
 interface PaginationLink {
@@ -66,6 +75,7 @@ const props = defineProps<{
         links: PaginationLink[];
         total: number;
     };
+    ai_module_enabled: boolean;
 }>();
 
 const page = usePage();
@@ -79,6 +89,7 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const uploadDialogOpen = ref(false);
 const chosenFile = ref<File | null>(null);
 const chosenVisibility = ref<'private' | 'public'>('private');
+const includeInLlm = ref(false);
 
 function onFileChosen(event: Event) {
     const target = event.target as HTMLInputElement;
@@ -88,6 +99,7 @@ function onFileChosen(event: Event) {
     if (file) {
         chosenFile.value = file;
         chosenVisibility.value = 'private';
+        includeInLlm.value = false;
         uploadDialogOpen.value = true;
     }
 }
@@ -95,7 +107,7 @@ function onFileChosen(event: Event) {
 function confirmUpload() {
     if (!chosenFile.value) return;
 
-    startUpload(chosenFile.value, chosenVisibility.value);
+    startUpload(chosenFile.value, chosenVisibility.value, includeInLlm.value);
     uploadDialogOpen.value = false;
     chosenFile.value = null;
 }
@@ -133,7 +145,7 @@ let poll: ReturnType<typeof setInterval> | null = null;
 
 onMounted(() => {
     poll = setInterval(() => {
-        if (props.documents.data.some((d) => d.status === 'pending')) {
+        if (props.documents.data.some((d) => d.status === 'pending' || d.llm_status === 'pending')) {
             router.reload({ only: ['documents'] });
         }
     }, 5000);
@@ -143,7 +155,59 @@ onUnmounted(() => {
     if (poll) clearInterval(poll);
 });
 
+/* AI assistant chat ----------------------------------------------------- */
+
+const chatDialogOpen = ref(false);
+const chatMessages = ref<ChatMessage[]>([]);
+const chatInput = ref('');
+const chatLoading = ref(false);
+
+async function sendChatMessage() {
+    const question = chatInput.value.trim();
+    if (!question || chatLoading.value) return;
+
+    chatMessages.value.push({ role: 'user', content: question });
+    chatInput.value = '';
+    chatLoading.value = true;
+
+    try {
+        const { data } = await axios.post('/assistant/chat', { question });
+        const result = await pollForAnswer(data.id);
+        chatMessages.value.push({ role: 'assistant', content: result.answer, sources: result.sources });
+    } catch (err: any) {
+        chatMessages.value.push({
+            role: 'assistant',
+            content:
+                err.response?.data?.message ??
+                err.message ??
+                'Something went wrong asking the assistant. Please try again.',
+        });
+    } finally {
+        chatLoading.value = false;
+    }
+}
+
+// The assistant runs as a background job (a local LLM call can take minutes),
+// so we poll for its result instead of waiting on one long HTTP request.
+async function pollForAnswer(id: string, attempt = 0): Promise<{ answer: string; sources: string[] }> {
+    const { data } = await axios.get(`/assistant/chat/${id}`);
+
+    if (data.status === 'pending') {
+        if (attempt > 300) throw new Error('The assistant is taking too long to respond. Please try again.');
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        return pollForAnswer(id, attempt + 1);
+    }
+
+    return { answer: data.answer, sources: data.sources };
+}
+
 /* Helpers ------------------------------------------------------------- */
+
+const llmStatusLabel = (status: DocumentRow['llm_status']) =>
+    status === 'ready' ? 'AI ready'
+    : status === 'pending' ? 'AI indexing…'
+    : status === 'failed' ? 'AI failed'
+    : 'AI queued';
 
 const statusVariant = (status: DocumentRow['status']) =>
     status === 'processed' ? 'default' : status === 'failed' ? 'destructive' : 'secondary';
@@ -174,6 +238,15 @@ const methodLabel = (method: string | null) =>
                     class="hidden"
                     @change="onFileChosen"
                 />
+                <Button
+                    v-if="props.ai_module_enabled"
+                    variant="outline"
+                    class="mr-2"
+                    @click="chatDialogOpen = true"
+                >
+                    <Sparkles class="mr-1.5 h-4 w-4" />
+                    Ask AI
+                </Button>
                 <Button @click="fileInput?.click()">Upload PDF</Button>
             </div>
         </div>
@@ -211,6 +284,13 @@ const methodLabel = (method: string | null) =>
                                     class="shrink-0"
                                 >
                                     Public
+                                </Badge>
+                                <Badge
+                                    v-if="doc.include_in_llm"
+                                    :variant="doc.llm_status === 'failed' ? 'destructive' : 'secondary'"
+                                    class="shrink-0"
+                                >
+                                    {{ llmStatusLabel(doc.llm_status) }}
                                 </Badge>
                             </div>
                             <p
@@ -332,6 +412,21 @@ const methodLabel = (method: string | null) =>
                     </p>
                 </div>
 
+                <label v-if="props.ai_module_enabled" class="flex items-start gap-2 text-sm">
+                    <Checkbox
+                        :model-value="includeInLlm"
+                        class="mt-0.5"
+                        @update:model-value="(checked) => (includeInLlm = !!checked)"
+                    />
+                    <span>
+                        Include in AI assistant
+                        <span class="block text-xs text-muted-foreground">
+                            Lets "Ask AI" answer questions using this document's content. Runs on our
+                            self-hosted model — nothing is sent to a third party.
+                        </span>
+                    </span>
+                </label>
+
                 <DialogFooter>
                     <Button type="button" variant="outline" @click="uploadDialogOpen = false">
                         Cancel
@@ -388,81 +483,46 @@ const methodLabel = (method: string | null) =>
             </DialogContent>
         </Dialog>
 
-
-        <Dialog v-model:open="forwardDialogOpen">
-            <DialogContent class="sm:max-w-md">
+        <!-- AI assistant chat -->
+        <Dialog v-model:open="chatDialogOpen">
+            <DialogContent class="flex max-h-[80vh] flex-col sm:max-w-lg">
                 <DialogHeader>
-                    <DialogTitle>Forward document</DialogTitle>
+                    <DialogTitle>Ask AI</DialogTitle>
                     <DialogDescription>
-                        <strong>{{ forwardingDoc?.original_filename }}</strong>
+                        Answers are generated only from documents you've included in the AI assistant.
                     </DialogDescription>
                 </DialogHeader>
 
-                <div class="flex flex-col gap-4">
-                    <div class="grid gap-2">
-                        <Label>Send to</Label>
-                        <Select v-model="routingScope">
-                            <SelectTrigger>
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="within_division">Someone in my division</SelectItem>
-                                <SelectItem v-if="isFocal" value="cross_division">Another division</SelectItem>
-                            </SelectContent>
-                        </Select>
+                <div class="flex flex-1 flex-col gap-3 overflow-y-auto py-2">
+                    <p v-if="chatMessages.length === 0" class="text-sm text-muted-foreground">
+                        Ask a question about any document you've marked "Include in AI assistant".
+                    </p>
+
+                    <div
+                        v-for="(message, i) in chatMessages"
+                        :key="i"
+                        class="flex flex-col gap-1 rounded-lg p-3 text-sm"
+                        :class="message.role === 'user' ? 'ml-8 bg-primary text-primary-foreground' : 'mr-8 bg-muted'"
+                    >
+                        <p class="whitespace-pre-wrap">{{ message.content }}</p>
                     </div>
 
-                    <div v-if="routingScope === 'within_division'" class="grid gap-2">
-                        <Label>Colleague</Label>
-                        <Select v-model="toUserId">
-                            <SelectTrigger>
-                                <SelectValue placeholder="Choose a colleague" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem v-for="c in colleagues" :key="c.id" :value="c.id">
-                                    {{ c.name }}
-                                </SelectItem>
-                            </SelectContent>
-                        </Select>
-                    </div>
-
-                    <div v-else class="grid gap-2">
-                        <Label>Division</Label>
-                        <Select v-model="toOrgUnitId">
-                            <SelectTrigger>
-                                <SelectValue placeholder="Choose a division" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem v-for="d in divisions" :key="d.id" :value="d.id">
-                                    {{ d.name }}
-                                </SelectItem>
-                            </SelectContent>
-                        </Select>
-                        <p class="text-xs text-muted-foreground">
-                            Delivered to that division's Document Focal for intake.
-                        </p>
-                    </div>
-
-                    <div class="grid gap-2">
-                        <Label>Remarks (optional)</Label>
-                        <Input v-model="remarks" placeholder="e.g. For review and comments" />
-                    </div>
-
-                    <p v-if="forwardError" class="text-sm text-destructive">{{ forwardError }}</p>
+                    <p v-if="chatLoading" class="mr-8 rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+                        Thinking…
+                    </p>
                 </div>
 
-                <DialogFooter>
-                    <Button type="button" variant="outline" @click="forwardDialogOpen = false">
-                        Cancel
+                <form class="flex items-center gap-2 border-t pt-3" @submit.prevent="sendChatMessage">
+                    <Input
+                        v-model="chatInput"
+                        placeholder="Ask a question…"
+                        :disabled="chatLoading"
+                        autofocus
+                    />
+                    <Button type="submit" size="icon" :disabled="chatLoading || !chatInput.trim()">
+                        <Send class="h-4 w-4" />
                     </Button>
-                    <Button
-                        type="button"
-                        :disabled="routingScope === 'within_division' ? !toUserId : !toOrgUnitId"
-                        @click="submitForward"
-                    >
-                        Forward
-                    </Button>
-                </DialogFooter>
+                </form>
             </DialogContent>
         </Dialog>
     </div>

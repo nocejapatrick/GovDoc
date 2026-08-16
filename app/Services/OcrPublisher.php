@@ -3,26 +3,31 @@
 namespace App\Services;
 
 use App\Models\Document;
-use PhpAmqpLib\Connection\AMQPStreamConnection;
-use PhpAmqpLib\Message\AMQPMessage;
+use Aws\Sqs\SqsClient;
 
 class OcrPublisher
 {
-    private const QUEUE = 'ocr-jobs';
+    private SqsClient $sqs;
+
+    public function __construct()
+    {
+        // Reuses the same credentials/endpoint as the "sqs" queue connection
+        // (config/queue.php) so both point at Floci locally and real SQS in prod.
+        $connection = config('queue.connections.sqs');
+
+        $this->sqs = new SqsClient([
+            'version' => 'latest',
+            'region' => $connection['region'],
+            'endpoint' => $connection['endpoint'],
+            'credentials' => [
+                'key' => $connection['key'],
+                'secret' => $connection['secret'],
+            ],
+        ]);
+    }
 
     public function publish(Document $document): void
     {
-        $connection = new AMQPStreamConnection(
-            config('services.rabbitmq.host'),
-            config('services.rabbitmq.port'),
-            config('services.rabbitmq.user'),
-            config('services.rabbitmq.password'),
-        );
-
-        $channel = $connection->channel();
-
-        $channel->queue_declare(self::QUEUE, false, true, false, false);
-
         $payload = json_encode([
             'document_id' => $document->id,
             'bucket' => config('filesystems.disks.s3.bucket'),
@@ -33,16 +38,9 @@ class OcrPublisher
                 . "/api/internal/documents/{$document->id}/progress",
         ], JSON_THROW_ON_ERROR);
 
-        $channel->basic_publish(
-            new AMQPMessage($payload, [
-                'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-                'content_type' => 'application/json',
-            ]),
-            '',
-            self::QUEUE,
-        );
-
-        $channel->close();
-        $connection->close();
+        $this->sqs->sendMessage([
+            'QueueUrl' => config('services.ocr.sqs_queue_url'),
+            'MessageBody' => $payload,
+        ]);
     }
 }

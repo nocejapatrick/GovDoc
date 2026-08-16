@@ -6,4 +6,3 @@ pytesseract==0.3.*
 Pillow==11.*
 boto3==1.35.*
 httpx==0.28.*
-pika==1.3.*

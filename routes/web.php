@@ -7,6 +7,7 @@ use App\Http\Controllers\Internal\DocumentResultController;
 use App\Http\Controllers\Internal\DocumentProgressController;
 use App\Http\Controllers\DocumentRouteController;
 use App\Http\Controllers\RoutingController;
+use App\Http\Controllers\AssistantController;
 
 Route::inertia('/', 'Welcome')->name('home');
 
@@ -18,6 +19,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('/documents', [DocumentController::class, 'store'])->name('documents.storep');
     Route::delete('/documents/{document}', [DocumentController::class, 'destroy'])->name('documents.destroy');
     Route::get('/documents/search', [DocumentController::class, 'search'])->name('documents.search');
+    Route::post('/assistant/chat', [AssistantController::class, 'ask'])->name('assistant.chat');
+    Route::get('/assistant/chat/{id}', [AssistantController::class, 'status'])->name('assistant.chat.status');
     Route::get('/documents/routing-options', [DocumentRouteController::class, 'routingOptions']);
     // Route::get('/inbox', [DocumentRouteController::class, 'inbox'])->name('documents.inbox');
     Route::get('/routing', [RoutingController::class, 'index'])->name('routing.index');
@@ -29,7 +32,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('/documents/{document}/retry', [DocumentController::class, 'retry'])->name('documents.retry');
     Route::get('/activity', [\App\Http\Controllers\Admin\ActivityController::class, 'index'])
     ->name('admin.activity');
-    Route::post('/documents/{document}/forward', [DocumentRouteController::class, 'forward'])->name('documents.forward');
+    Route::get('/admin/settings', [\App\Http\Controllers\Admin\SettingController::class, 'index'])
+        ->name('admin.settings');
+    Route::put('/admin/settings', [\App\Http\Controllers\Admin\SettingController::class, 'update'])
+        ->name('admin.settings.update');
     Route::post('/documents/{document}/receive', [DocumentRouteController::class, 'receive'])->name('documents.receive');
 
     // Route::get('/documents/{document}/routing', [DocumentController::class, 'routing'])->name('documents.routing');
@@ -37,9 +43,11 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::get('/documents/{document}/sign', [DocumentController::class, 'showSignPage'])->name('documents.sign');
     Route::post('/documents/{document}/sign', [DocumentController::class, 'applySignature']);
+    Route::post('/documents/{document}/replace', [RoutingController::class, 'replaceFile'])->name('documents.replace');
 
     Route::get('/routing/{case}', [RoutingController::class, 'show'])->name('routing.show');
     Route::post('/routing/{case}/files', [RoutingController::class, 'addFile']);
+    Route::delete('/routing/{case}/files/{document}', [RoutingController::class, 'deleteFile']);
     Route::post('/routing/{case}/forward', [RoutingController::class, 'forward']);
     Route::post('/routing/{case}/receive', [RoutingController::class, 'receive']);
 });

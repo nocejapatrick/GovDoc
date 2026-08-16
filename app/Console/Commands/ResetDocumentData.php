@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Storage;
 class ResetDocumentData extends Command
 {
     protected $signature = 'documents:reset {--keep-files : Skip deleting files from MinIO storage}';
-    protected $description = 'Wipe all documents, versions, routes, and routing cases for a clean testing slate.';
+    protected $description = 'Wipe all documents, versions, chunks/embeddings, routes, and routing cases for a clean testing slate.';
 
     public function handle(DocumentIndexer $indexer): int
     {
@@ -45,6 +45,9 @@ class ResetDocumentData extends Command
         $this->info('Truncating tables...');
 
         // Order matters: children before parents, or disable FK checks around it.
+        // document_chunks also cascades from the documents truncate below (FK cascadeOnDelete),
+        // but it's listed explicitly here for clarity.
+        DB::statement('TRUNCATE TABLE document_chunks RESTART IDENTITY CASCADE');
         DB::statement('TRUNCATE TABLE document_routes RESTART IDENTITY CASCADE');
         DB::statement('TRUNCATE TABLE document_versions RESTART IDENTITY CASCADE');
         DB::statement('TRUNCATE TABLE documents RESTART IDENTITY CASCADE');

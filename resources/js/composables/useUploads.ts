@@ -17,7 +17,11 @@ const uploads = reactive<UploadItem[]>([]);
 
 let nextId = 1;
 
-async function startUpload(file: File, visibility: 'private' | 'public' = 'private',): Promise<void> {
+async function startUpload(
+    file: File,
+    visibility: 'private' | 'public' = 'private',
+    includeInLlm = false,
+): Promise<void> {
     const item: UploadItem = reactive({
         id: nextId++,
         filename: file.name,
@@ -30,7 +34,8 @@ async function startUpload(file: File, visibility: 'private' | 'public' = 'priva
 
     const form = new FormData();
     form.append('file', file);
-    form.append('visibility', visibility);  
+    form.append('visibility', visibility);
+    form.append('include_in_llm', includeInLlm ? '1' : '0');
 
     try {
         await axios.post('/documents', form, {

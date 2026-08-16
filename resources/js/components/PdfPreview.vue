@@ -3,18 +3,20 @@ import { onMounted, ref, watch } from 'vue';
 import { usePdfViewer } from '@/composables/usePdfViewer';
 import { Button } from '@/components/ui/button';
 
-const props = defineProps<{ documentId: number }>();
+const props = defineProps<{ documentId: number; versionId?: number | null }>();
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const { numPages, pageNum, loading, load, renderPage } = usePdfViewer();
 
 onMounted(async () => {
-     console.log('documentId prop:', props.documentId);
     if (!props.documentId) {
         console.error('PdfPreview: documentId is missing!');
         return;
     }
-    await load(`/documents/${props.documentId}/raw`);
+    const url = props.versionId
+        ? `/documents/${props.documentId}/raw?version=${props.versionId}`
+        : `/documents/${props.documentId}/raw`;
+    await load(url);
     render();
 });
 

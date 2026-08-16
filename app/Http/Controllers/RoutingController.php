@@ -39,7 +39,7 @@ class RoutingController extends Controller
                 'tracking_status' => $case->tracking_status,
                 'current_holder' => $case->currentHolder?->name,
                 'is_mine_to_act_on' => $case->current_holder_id === $userId,
-                'created_at' => $case->created_at->format('M j, Y'),
+                'created_at' => $case->created_at->format('M j, Y H:i'),
             ]),
         ]);
     }
@@ -59,12 +59,8 @@ class RoutingController extends Controller
             'tracking_status' => 'draft',
         ]);
 
-            \Log::info('Case created', ['case_id' => $case->id]);
-
         foreach ($request->file('files') as $file) {
-            \Log::info('Attaching file', ['case_id' => $case->id, 'filename' => $file->getClientOriginalName()]);
             $this->attachFile($case, $file, $request->user()->id);
-            
         }
 
         activity()->performedOn($case)->causedBy($request->user())
@@ -92,6 +88,28 @@ class RoutingController extends Controller
         activity()->performedOn($case)->causedBy($request->user())
             ->withProperties(['filename' => $document->original_filename])
             ->log('file added to case');
+
+        return back();
+    }
+
+    public function deleteFile(Request $request, RoutingCase $case, Document $document): RedirectResponse
+    {
+        abort_unless($document->routing_case_id === $case->id, 404);
+        abort_unless($document->user_id === $request->user()->id, 403, 'Only the uploader can delete this file.');
+
+        $request->validate([
+            'password' => ['required', 'current_password'],
+        ]);
+
+        foreach ($document->versions as $version) {
+            Storage::disk('s3')->delete($version->storage_path);
+        }
+
+        activity()->performedOn($case)->causedBy($request->user())
+            ->withProperties(['filename' => $document->original_filename])
+            ->log('file deleted from case');
+
+        $document->delete();
 
         return back();
     }
@@ -126,18 +144,18 @@ class RoutingController extends Controller
     {
         $userId = $request->user()->id;
 
-        $hasBeenInvolved = $case->routes()
-            ->where(fn ($q) => $q->where('from_user_id', $userId)->orWhere('to_user_id', $userId))
-            ->exists();
+        $case->load(['routes.fromUser.orgUnit', 'routes.toUser.orgUnit', 'documents.user', 'documents.versions.createdBy']);
+
+        $isInvolved = fn ($route) => $route->from_user_id === $userId || $route->to_user_id === $userId;
 
         abort_unless(
             $case->user_id === $userId
                 || $case->current_holder_id === $userId
-                || $hasBeenInvolved,
+                || $case->routes->contains($isInvolved),
             403,
         );
 
-        $latestRoute = $case->routes()->latest()->first();
+        $latestRoute = $case->routes->first(); // routes() relation is already ->latest()
         $isCurrentHolder = $case->current_holder_id === $userId;
         $hasUnreceivedIncoming = $latestRoute
             && $latestRoute->to_user_id === $userId
@@ -155,32 +173,44 @@ class RoutingController extends Controller
             'documents' => $case->documents->map(fn (Document $doc) => [
                 'id' => $doc->id,
                 'original_filename' => $doc->original_filename,
+                'uploader' => $doc->user?->name,
+                'can_delete' => $doc->user_id === $userId,
+                'versions' => $doc->versions->sortByDesc('version_number')->values()->map(fn ($version) => [
+                    'id' => $version->id,
+                    'version_number' => $version->version_number,
+                    'label' => $version->label,
+                    'created_by' => $version->createdBy?->name,
+                    'created_at' => $version->created_at->format('M j, Y H:i'),
+                ]),
             ]),
             'can_receive' => $isCurrentHolder && $hasUnreceivedIncoming,
             'can_forward' => $isCurrentHolder && ! $hasUnreceivedIncoming,
             'is_current_holder' => $isCurrentHolder,
             'is_focal' => $request->user()->hasRole('document_focal'),
             'colleagues' => $isCurrentHolder
-                ? User::where('org_unit_id', $request->user()->org_unit_id)->where('id', '!=', $userId)->get(['id', 'name'])
+                ? User::where('org_unit_id', $request->user()->org_unit_id)->where('id', '!=', $userId)
+                    ->with('position')
+                    ->get(['id', 'name', 'position_id'])
+                    ->map(fn (User $user) => [
+                        'id' => $user->id,
+                        'name' => $user->name,
+                        'position' => $user->position?->title,
+                    ])
                 : [],
             'divisions' => $isCurrentHolder
                 ? OrgUnit::where('type', 'division')->where('id', '!=', $request->user()->org_unit_id)->get(['id', 'name'])
                 : [],
-            'trail' => $case->routes()
-                ->with(['fromUser.orgUnit', 'toUser.orgUnit'])
-                ->oldest()
-                ->get()
-                ->map(fn ($route) => [
-                    'id' => $route->id,
-                    'from' => $route->fromUser?->name ?? 'Started',
-                    'from_division' => $route->fromUser?->orgUnit?->name,
-                    'to' => $route->toUser->name,
-                    'to_division' => $route->toUser->orgUnit?->name,
-                    'action' => $route->action,
-                    'remarks' => $route->remarks,
-                    'sent_at' => $route->created_at->format('M j, Y H:i'),
-                    'received_at' => $route->received_at?->format('M j, Y H:i'),
-                ]),
+            'trail' => $case->routes->sortBy('created_at')->values()->map(fn ($route) => [
+                'id' => $route->id,
+                'from' => $route->fromUser?->name ?? 'Started',
+                'from_division' => $route->fromUser?->orgUnit?->name,
+                'to' => $route->toUser?->name,
+                'to_division' => $route->toUser?->orgUnit?->name,
+                'action' => $route->action,
+                'remarks' => $route->remarks,
+                'sent_at' => $route->created_at->format('M j, Y H:i'),
+                'received_at' => $route->received_at?->format('M j, Y H:i'),
+            ]),
         ]);
     }
 
@@ -248,6 +278,41 @@ class RoutingController extends Controller
             ?->update(['received_at' => now()]);
 
         activity()->performedOn($case)->causedBy($request->user())->log('received');
+
+        return back();
+    }
+    public function replaceFile(Request $request, Document $document): RedirectResponse
+    {
+        abort_unless($document->isAccessibleBy($request->user()), 403);
+
+        // Only the current holder of the CASE this document belongs to may replace it.
+        abort_unless(
+            $document->routing_case_id
+                && $document->routingCase->current_holder_id === $request->user()->id,
+            403,
+        );
+
+        $request->validate([
+            'file' => ['required', 'file', 'mimes:pdf', 'mimetypes:application/pdf', 'max:204800'],
+        ]);
+
+        $file = $request->file('file');
+        $path = $file->store('routed/' . now()->format('Y/m'), 's3');
+
+        $nextVersionNumber = $document->versions()->max('version_number') + 1;
+
+        $newVersion = $document->versions()->create([
+            'created_by' => $request->user()->id,
+            'storage_path' => $path,
+            'version_number' => $nextVersionNumber,
+            'label' => 'Replaced by ' . $request->user()->name,
+        ]);
+
+        $document->update(['current_version_id' => $newVersion->id]);
+
+        activity()->performedOn($document)->causedBy($request->user())
+            ->withProperties(['filename' => $document->original_filename, 'version' => $nextVersionNumber])
+            ->log('file replaced');
 
         return back();
     }

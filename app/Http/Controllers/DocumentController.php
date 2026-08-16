@@ -15,6 +15,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 use Illuminate\Support\Facades\Http;
 use App\Models\User;
 use App\Models\OrgUnit;
+use App\Models\Setting;
 
 class DocumentController extends Controller
 {
@@ -45,7 +46,10 @@ class DocumentController extends Controller
                 'current_holder_name' => $doc->currentHolder?->name,
                 'tracking_status' => $doc->tracking_status,
                 'has_been_routed' => $doc->routing_case_id !== null,
+                'include_in_llm' => $doc->include_in_llm,
+                'llm_status' => $doc->llm_status,
             ]),
+            'ai_module_enabled' => Setting::flag('ai_module_enabled'),
         ]);
     }
 
@@ -54,6 +58,7 @@ class DocumentController extends Controller
         $request->validate([
             'file' => ['required', 'file', 'mimes:pdf', 'mimetypes:application/pdf', 'max:204800'], // 50 MB
             'visibility' => ['required', 'in:private,public'],
+            'include_in_llm' => ['sometimes', 'boolean'],
         ]);
 
         $file = $request->file('file');
@@ -67,6 +72,7 @@ class DocumentController extends Controller
             'status' => 'pending',
             'visibility' => $request->input('visibility'),
             'current_holder_id' => $request->user()->id,
+            'include_in_llm' => $request->boolean('include_in_llm'),
         ]);
 
         try {
@@ -230,8 +236,12 @@ class DocumentController extends Controller
     {
         abort_unless($document->isAccessibleBy($request->user()), 403);
 
-        $path = $document->currentVersion?->storage_path ?? $document->storage_path;
-    
+        if ($versionId = $request->integer('version')) {
+            $path = $document->versions()->findOrFail($versionId)->storage_path;
+        } else {
+            $path = $document->currentVersion?->storage_path ?? $document->storage_path;
+        }
+
         return Storage::disk('s3')->response(
             $path,
             $document->original_filename,
@@ -311,6 +321,7 @@ class DocumentController extends Controller
             'document' => [
                 'id' => $document->id,
                 'original_filename' => $document->original_filename,
+                'routing_case_id' => $document->routing_case_id,
             ],
         ]);
     }

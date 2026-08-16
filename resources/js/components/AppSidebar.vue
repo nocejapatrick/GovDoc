@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Link, usePage } from '@inertiajs/vue3';
 import { computed } from 'vue';
-import { BookOpen, FileText, FolderGit2, LayoutGrid, MailSearch, ScrollText } from '@lucide/vue';
+import { BookOpen, FileText, FolderGit2, LayoutGrid, MailSearch, ScrollText, Settings } from '@lucide/vue';
 import AppLogo from '@/components/AppLogo.vue';
 import NavFooter from '@/components/NavFooter.vue';
 import NavMain from '@/components/NavMain.vue';
@@ -49,7 +49,12 @@ const mainNavItems: NavItem[] = [
         title: 'Routing',
         href: '/routing',
         icon: Send,   // or similar from @lucide/vue
-    }
+    },
+    ...(isAdmin.value ? [{
+        title: 'Settings',
+        href: '/admin/settings',
+        icon: Settings,
+    }] : []),
 ];
 
 const footerNavItems: NavItem[] = [

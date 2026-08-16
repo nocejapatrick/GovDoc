@@ -85,7 +85,7 @@ class UserController extends Controller
 
         $user->save();
 
-        $user->syncRoles([$request->validated('roles')]);
+        $user->syncRoles($request->validated('roles'));
 
         return back();
     }

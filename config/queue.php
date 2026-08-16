@@ -61,6 +61,9 @@ return [
             'queue' => env('SQS_QUEUE', 'default'),
             'suffix' => env('SQS_SUFFIX'),
             'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
+            // Local dev points this at Floci (see dockers/docker-compose.yml); leave unset
+            // in production so the AWS SDK talks to real SQS.
+            'endpoint' => env('AWS_SQS_ENDPOINT'),
             'after_commit' => false,
         ],
 

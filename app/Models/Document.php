@@ -33,6 +33,12 @@ class Document extends Model
         'type',
         'routing_case_id',
         'current_version_id',
+        'include_in_llm',
+        'llm_status',
+    ];
+
+    protected $casts = [
+        'include_in_llm' => 'boolean',
     ];
 
     public function user(): BelongsTo
@@ -64,6 +70,11 @@ class Document extends Model
     public function currentVersion(): BelongsTo
     {
         return $this->belongsTo(DocumentVersion::class, 'current_version_id');
+    }
+
+    public function chunks(): HasMany
+    {
+        return $this->hasMany(DocumentChunk::class)->orderBy('chunk_index');
     }
     public function routingCase(): BelongsTo
     {

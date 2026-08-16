@@ -1,5 +1,5 @@
 """
-RabbitMQ worker for the OCR service.
+SQS worker for the OCR service.
 
 Consumes JSON messages from the "ocr-jobs" queue:
 
@@ -11,31 +11,33 @@ Consumes JSON messages from the "ocr-jobs" queue:
     }
 
 Flow per message:
-    1. Download the PDF from MinIO (S3-compatible, same boto3 code as AWS)
+    1. Download the PDF from Floci's S3-compatible API (same boto3 code as real AWS S3)
     2. Run extraction (native text / OCR per page)
     3. POST the result to the Laravel callback, signed with HMAC-SHA256
-    4. Ack the message ONLY after the callback succeeds
+    4. Delete the message ONLY after the callback succeeds
 
-Retry topology (declared by this worker on startup, idempotent):
-
-    ocr-jobs        main work queue
-    ocr-jobs-retry  holding pen with a 60s TTL; expired messages are
-                    dead-lettered back into ocr-jobs (i.e. delayed retry)
-    ocr-jobs-dlq    final resting place after MAX_RETRIES failed attempts
+Retry topology: handled entirely by the queue's redrive policy (set at
+creation time — see the floci-init step in dockers/docker-compose.yml),
+which moves a message to ocr-jobs-dlq automatically after 3 receives.
+No retry queue or manual retry-count header needed, unlike the old
+RabbitMQ TTL/dead-letter-exchange setup this replaces.
 
 Failure semantics:
     - Permanent errors (corrupt/encrypted PDF): report "failed" to the
-      callback, ack. Retrying would never succeed.
-    - Transient errors (MinIO hiccup, Laravel down): republish to the
-      retry queue with an incremented x-retry-count header; after
-      MAX_RETRIES the message goes to the DLQ instead.
+      callback, delete the message. Retrying would never succeed.
+    - Transient errors (Floci hiccup, Laravel down): make the message
+      visible again in 60s via change_message_visibility, without
+      deleting it. SQS counts the receive automatically toward the
+      queue's maxReceiveCount.
 
 Environment variables:
-    RABBITMQ_URL           e.g. amqp://guest:guest@rabbitmq:5672/%2F
+    SQS_ENDPOINT_URL       e.g. http://floci:4566
+    OCR_JOBS_QUEUE_URL     e.g. http://floci:4566/000000000000/ocr-jobs
+    AWS_DEFAULT_REGION     e.g. us-east-1
     OCR_CALLBACK_SECRET    shared secret for HMAC signing
-    S3_ENDPOINT_URL        e.g. http://minio:9000
-    AWS_ACCESS_KEY_ID      MinIO access key
-    AWS_SECRET_ACCESS_KEY  MinIO secret key
+    S3_ENDPOINT_URL        e.g. http://floci:4566
+    AWS_ACCESS_KEY_ID      Floci access key (unused in prod — real IAM role there)
+    AWS_SECRET_ACCESS_KEY  Floci secret key (unused in prod — real IAM role there)
 """
 
 import hashlib
@@ -48,7 +50,6 @@ import time
 
 import boto3
 import httpx
-import pika
 from botocore.config import Config
 
 from extractor import PermanentExtractionError, extract_pdf
@@ -56,51 +57,25 @@ from extractor import PermanentExtractionError, extract_pdf
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ocr-worker")
 
-RABBITMQ_URL = os.environ["RABBITMQ_URL"]
+QUEUE_URL = os.environ["OCR_JOBS_QUEUE_URL"]
 CALLBACK_SECRET = os.environ["OCR_CALLBACK_SECRET"]
 
-QUEUE = "ocr-jobs"
-RETRY_QUEUE = "ocr-jobs-retry"
-DLQ = "ocr-jobs-dlq"
-RETRY_DELAY_MS = 60_000
-MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 60
 
 s3 = boto3.client(
     "s3",
     endpoint_url=os.environ["S3_ENDPOINT_URL"],
-    config=Config(s3={"addressing_style": "path"}),  # required for MinIO
+    config=Config(s3={"addressing_style": "path"}),  # required for Floci (no virtual-host DNS locally)
+)
+
+sqs = boto3.client(
+    "sqs",
+    endpoint_url=os.environ["SQS_ENDPOINT_URL"],
+    region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
 )
 
 
-def declare_topology(channel: pika.channel.Channel) -> None:
-    channel.queue_declare(queue=DLQ, durable=True)
-
-    channel.queue_declare(
-        queue=RETRY_QUEUE,
-        durable=True,
-        arguments={
-            "x-message-ttl": RETRY_DELAY_MS,
-            "x-dead-letter-exchange": "",
-            "x-dead-letter-routing-key": QUEUE,  # expired -> back to main queue
-        },
-    )
-
-    channel.queue_declare(queue=QUEUE, durable=True)
-
-
-def on_message(channel, method, properties, body: bytes) -> None:
-    try:
-        handle(channel, properties, body)
-    except Exception:
-        logger.exception("Transient failure")
-        retry_or_dead_letter(channel, properties, body)
-
-    # In every path the original message is done: success, permanent
-    # failure (reported), republished to retry, or moved to the DLQ.
-    channel.basic_ack(delivery_tag=method.delivery_tag)
-
-
-def handle(channel, properties, body: bytes) -> None:
+def handle(body: bytes) -> None:
     job = json.loads(body)
     document_id = job["document_id"]
     bucket, key = job["bucket"], job["key"]
@@ -138,29 +113,6 @@ def handle(channel, properties, body: bytes) -> None:
     logger.info(
         "Document %s done: %d pages, method=%s, %.2fs",
         document_id, result["page_count"], result["method"], result["duration_seconds"],
-    )
-
-
-def retry_or_dead_letter(channel, properties, body: bytes) -> None:
-    headers = dict(properties.headers or {})
-    attempts = int(headers.get("x-retry-count", 0))
-
-    if attempts >= MAX_RETRIES:
-        logger.error("Message exceeded %d retries; moving to DLQ", MAX_RETRIES)
-        target, headers["x-retry-count"] = DLQ, attempts
-    else:
-        target, headers["x-retry-count"] = RETRY_QUEUE, attempts + 1
-        logger.info("Scheduling retry %d/%d in %ds", attempts + 1, MAX_RETRIES, RETRY_DELAY_MS // 1000)
-
-    channel.basic_publish(
-        exchange="",
-        routing_key=target,
-        body=body,
-        properties=pika.BasicProperties(
-            delivery_mode=pika.DeliveryMode.Persistent,
-            content_type="application/json",
-            headers=headers,
-        ),
     )
 
 
@@ -210,25 +162,33 @@ def make_progress_reporter(progress_url: str):
 
 
 def main() -> None:
-    # RabbitMQ may still be booting when the container starts.
+    logger.info("Worker started, consuming from '%s'", QUEUE_URL)
+
     while True:
         try:
-            connection = pika.BlockingConnection(pika.URLParameters(RABBITMQ_URL))
-            break
-        except pika.exceptions.AMQPConnectionError:
-            logger.info("RabbitMQ not ready, retrying in 3s...")
+            response = sqs.receive_message(
+                QueueUrl=QUEUE_URL,
+                MaxNumberOfMessages=1,
+                WaitTimeSeconds=20,  # long poll
+            )
+        except Exception:
+            logger.exception("SQS not reachable, retrying in 3s...")
             time.sleep(3)
+            continue
 
-    channel = connection.channel()
-    declare_topology(channel)
+        for message in response.get("Messages", []):
+            receipt_handle = message["ReceiptHandle"]
 
-    # One message at a time: OCR is CPU-bound, and this makes
-    # horizontal scaling (multiple workers) distribute work evenly.
-    channel.basic_qos(prefetch_count=1)
-    channel.basic_consume(queue=QUEUE, on_message_callback=on_message)
-
-    logger.info("Worker started, consuming from '%s'", QUEUE)
-    channel.start_consuming()
+            try:
+                handle(message["Body"].encode())
+                sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=receipt_handle)
+            except Exception:
+                logger.exception("Transient failure; retrying in %ds", RETRY_DELAY_SECONDS)
+                sqs.change_message_visibility(
+                    QueueUrl=QUEUE_URL,
+                    ReceiptHandle=receipt_handle,
+                    VisibilityTimeout=RETRY_DELAY_SECONDS,
+                )
 
 
 if __name__ == "__main__":
